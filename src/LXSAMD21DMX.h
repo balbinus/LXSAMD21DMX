@@ -257,6 +257,11 @@ class LXSAMD21DMX  {
    void inputIRQHandler();
    void rdmIRQHandler();
    
+   /*!
+    * @brief general interrupt handler, calls the specific one
+    */
+   void IRQHandler();
+   
       	/*!
     * @brief indicate if dmx frame should be sent by bi-directional task loop
     * @discussion should only be called by task loop

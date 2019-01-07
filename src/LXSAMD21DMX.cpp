@@ -34,17 +34,17 @@ uint8_t  _interrupt_mode;
 // 
 // DMX_SERCOM_HANDLER_FUNC macro points to handler name
 
-void DMX_SERCOM_HANDLER_FUNC()
+void LXSAMD21DMX::IRQHandler()
 {
 	switch ( _interrupt_mode ) {
 		case ISR_OUTPUT_ENABLED:
-			SAMD21DMX.outputIRQHandler();
+			outputIRQHandler();
 			break;
 		case ISR_INPUT_ENABLED:
-			SAMD21DMX.inputIRQHandler();
+			inputIRQHandler();
 			break;
 		case ISR_RDM_ENABLED:
-			SAMD21DMX.rdmIRQHandler();
+			rdmIRQHandler();
 			break;
 	}
 }
