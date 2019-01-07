@@ -58,6 +58,8 @@ TX (4) |----------------------| 4 DI   Gnd 5 |---+------------ Pin 1
 #include <inttypes.h>
 #include "SERCOM.h"
 #include <rdm/UID.h>
+#include "Arduino.h"
+#include "wiring_private.h"
 
 #define DMX_MIN_SLOTS 24
 #define DMX_MAX_SLOTS 512
@@ -129,7 +131,10 @@ class LXSAMD21DMX  {
     *             sets globals accessed in ISR, 
     *             enables transmission (TE) and tx interrupts (TIE/TCIE).
    */
-   void startOutput( void );
+   void startOutput( SERCOM *DMX_sercom, Sercom *DMX_sercomBase,
+                    uint8_t pin_dmx_rx, uint8_t pin_dmx_tx,
+                    SercomRXPad pad_dmx_rx, SercomUartTXPad pad_dmx_tx,
+                    EPioType func_dmx_rx, EPioType func_dmx_tx );
    
    /*!
     * @brief starts interrupt that continuously reads DMX data
@@ -137,14 +142,21 @@ class LXSAMD21DMX  {
     *             sets globals accessed in ISR, 
     *             enables receive (RE) and rx interrupt (RIE)
    */
-   void startInput( void );
+   void startInput( SERCOM *DMX_sercom, Sercom *DMX_sercomBase,
+                    uint8_t pin_dmx_rx, uint8_t pin_dmx_tx,
+                    SercomRXPad pad_dmx_rx, SercomUartTXPad pad_dmx_tx,
+                    EPioType func_dmx_rx, EPioType func_dmx_tx );
    
    /*!
     * @brief starts interrupt that continuously sends DMX output
     * @discussion  direction pin is required, calls startOutput
    */
    
-   void startRDM( uint8_t pin, uint8_t direction=1);
+   void startRDM( SERCOM *DMX_sercom, Sercom *DMX_sercomBase,
+                  uint8_t pin_dmx_rx, uint8_t pin_dmx_tx,
+                  SercomRXPad pad_dmx_rx, SercomUartTXPad pad_dmx_tx,
+                  EPioType func_dmx_rx, EPioType func_dmx_tx,
+                  uint8_t pin, uint8_t direction=1 );
    
    /*!
     * @brief disables tx, rx and interrupts.
@@ -378,6 +390,16 @@ class LXSAMD21DMX  {
    */
   	uint8_t _direction_pin;
   	
+    /*!
+     * @brief Uart used for serial communication
+     */
+    Uart *_serialDMX;
+    
+    /*!
+     * @brief SercomBase used for setting parameters on the serial
+     */
+    Sercom *_sercomDMX;
+    
   	/*!
 	 * @brief represents phase of sending dmx packet data/break/etc used to change baud settings
 	 */

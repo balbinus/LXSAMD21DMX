@@ -30,6 +30,22 @@ UID LXSAMD21DMX::THIS_DEVICE_ID(0x6C, 0x78, 0x00, 0x00, 0x00, 0x04);
 
 uint8_t  _interrupt_mode;
 
+
+// **************************** global data (can be accessed in ISR)  ***************
+
+void setBaudRate(Sercom *sercom, uint32_t baudrate) {
+	sercom->USART.CTRLA.bit.ENABLE = 0x0u; // must be disabled before writing to USART.BAUD or USART.CTRLA
+	uint16_t sampleRateValue = 16;
+
+    // see SERCOM.initUART
+    uint32_t baudTimes8 = (SystemCoreClock * 8) / (sampleRateValue * baudrate);
+
+    sercom->USART.BAUD.FRAC.FP   = (baudTimes8 % 8);
+    sercom->USART.BAUD.FRAC.BAUD = (baudTimes8 / 8);
+    sercom->USART.CTRLA.bit.ENABLE = 0x1u; // re-enable
+}
+
+
 // **************************** SERCOMn_Handler  ***************
 
 void LXSAMD21DMX::IRQHandler()
@@ -45,24 +61,6 @@ void LXSAMD21DMX::IRQHandler()
 			rdmIRQHandler();
 			break;
 	}
-}
-
-
-// **************************** global data (can be accessed in ISR)  ***************
-
-Uart SerialDMX (&DMX_sercom, PIN_DMX_RX, PIN_DMX_TX, PAD_DMX_RX, PAD_DMX_TX);
-
-
-void setBaudRate(uint32_t baudrate) {
-	DMX_SERCOM->USART.CTRLA.bit.ENABLE = 0x0u; // must be disabled before writing to USART.BAUD or USART.CTRLA
-	uint16_t sampleRateValue = 16;
-
-    // see SERCOM.initUART
-    uint32_t baudTimes8 = (SystemCoreClock * 8) / (sampleRateValue * baudrate);
-
-    DMX_SERCOM->USART.BAUD.FRAC.FP   = (baudTimes8 % 8);
-    DMX_SERCOM->USART.BAUD.FRAC.BAUD = (baudTimes8 / 8);
-    DMX_SERCOM->USART.CTRLA.bit.ENABLE = 0x1u; // re-enable
 }
 
 //************************************************************************************
@@ -85,7 +83,10 @@ LXSAMD21DMX::~LXSAMD21DMX ( void ) {
 }
 
 
-void LXSAMD21DMX::startOutput ( void ) {
+void LXSAMD21DMX::startOutput ( SERCOM *sercomDMX, Sercom *sercomDMXBase,
+                                uint8_t pin_dmx_rx, uint8_t pin_dmx_tx,
+                                SercomRXPad pad_dmx_rx, SercomUartTXPad pad_dmx_tx,
+                                EPioType func_dmx_rx, EPioType func_dmx_tx ) {
 	if ( _direction_pin != DIRECTION_PIN_NOT_USED ) {
 		digitalWrite(_direction_pin, HIGH);
 	}
@@ -95,11 +96,13 @@ void LXSAMD21DMX::startOutput ( void ) {
 	}
 	
 	if ( _interrupt_mode == ISR_DISABLED ) {	//prevent messing up sequence if already started...
-	  SerialDMX.begin(DMX_BREAK_BAUD, (uint8_t)SERIAL_8N2);
+	  _serialDMX = new Uart(sercomDMX, pin_dmx_rx, pin_dmx_tx, pad_dmx_rx, pad_dmx_tx);
+	  _serialDMX->begin(DMX_BREAK_BAUD, (uint8_t)SERIAL_8N2);
+	  _sercomDMX = sercomDMXBase;
   
-	  // Assign pin mux to SERCOM functionality (must come after SerialDMX.begin)
-	  pinPeripheral(PIN_DMX_RX, MUX_DMX_RX);
-	  pinPeripheral(PIN_DMX_TX, MUX_DMX_TX);
+	  // Assign pin mux to SERCOM functionality (must come after _serialDMX.begin)
+	  pinPeripheral(pin_dmx_rx, func_dmx_rx);
+	  pinPeripheral(pin_dmx_tx, func_dmx_tx);
 
 	  _interrupt_mode = ISR_OUTPUT_ENABLED;
 	  _rdm_task_mode = DMX_TASK_SEND;     
@@ -109,7 +112,10 @@ void LXSAMD21DMX::startOutput ( void ) {
 	}
 }
 
-void LXSAMD21DMX::startInput ( void ) {
+void LXSAMD21DMX::startInput ( SERCOM *sercomDMX, Sercom *sercomDMXBase,
+                               uint8_t pin_dmx_rx, uint8_t pin_dmx_tx,
+                               SercomRXPad pad_dmx_rx, SercomUartTXPad pad_dmx_tx,
+                               EPioType func_dmx_rx, EPioType func_dmx_tx ) {
 	if ( _direction_pin != DIRECTION_PIN_NOT_USED ) {
 		digitalWrite(_direction_pin, LOW);
 	}
@@ -117,11 +123,13 @@ void LXSAMD21DMX::startInput ( void ) {
 		stop();
 	}
 	if ( _interrupt_mode == ISR_DISABLED ) {	//prevent messing up sequence if already started...
-		SerialDMX.begin(DMX_DATA_BAUD, (uint8_t)SERIAL_8N2);
-  
-	   // Assign pin mux to SERCOM functionality (must come after SerialDMX.begin)
-	   pinPeripheral(PIN_DMX_RX, MUX_DMX_RX);
-	   pinPeripheral(PIN_DMX_TX, MUX_DMX_TX);
+	    _serialDMX = new Uart(sercomDMX, pin_dmx_rx, pin_dmx_tx, pad_dmx_rx, pad_dmx_tx);
+	    _serialDMX->begin(DMX_DATA_BAUD, (uint8_t)SERIAL_8N2);
+	    _sercomDMX = sercomDMXBase;
+
+	    // Assign pin mux to SERCOM functionality (must come after _serialDMX.begin)
+	    pinPeripheral(pin_dmx_rx, func_dmx_rx);
+	    pinPeripheral(pin_dmx_tx, func_dmx_tx);
 
 		_next_read_slot = 0;              
 		_dmx_read_state = DMX_STATE_IDLE;
@@ -130,23 +138,27 @@ void LXSAMD21DMX::startInput ( void ) {
 	}
 }
 
-void LXSAMD21DMX::startRDM( uint8_t pin, uint8_t direction ) {
+void LXSAMD21DMX::startRDM( SERCOM *sercomDMX, Sercom *sercomDMXBase,
+                            uint8_t pin_dmx_rx, uint8_t pin_dmx_tx,
+                            SercomRXPad pad_dmx_rx, SercomUartTXPad pad_dmx_tx,
+                            EPioType func_dmx_rx, EPioType func_dmx_tx,
+                            uint8_t pin, uint8_t direction ) {
 	pinMode(pin, OUTPUT);
 	_direction_pin = pin;
 	if ( direction ) {
-		startOutput();							//enables transmit interrupt
+		startOutput(sercomDMX, sercomDMXBase, pin_dmx_rx, pin_dmx_tx, pad_dmx_rx, pad_dmx_tx, func_dmx_rx, func_dmx_tx);	//enables transmit interrupt
 		_next_read_slot = 0;              
 		_dmx_read_state = DMX_STATE_IDLE;
 		_rdm_task_mode = DMX_TASK_SEND;
 	} else {
-		startInput();
-		DMX_SERCOM->USART.INTENSET.reg =  SERCOM_USART_INTENSET_TXC | SERCOM_USART_INTENSET_ERROR;
+		startInput(sercomDMX, sercomDMXBase, pin_dmx_rx, pin_dmx_tx, pad_dmx_rx, pad_dmx_tx, func_dmx_rx, func_dmx_tx);
+		_sercomDMX->USART.INTENSET.reg =  SERCOM_USART_INTENSET_TXC | SERCOM_USART_INTENSET_ERROR;
 	}
 	_interrupt_mode = ISR_RDM_ENABLED;
 }
 
 void LXSAMD21DMX::stop ( void ) {
-   SerialDMX.end();
+   if (_serialDMX) _serialDMX->end();
 	_interrupt_mode = ISR_DISABLED;
 }
 
@@ -191,16 +203,16 @@ uint8_t* LXSAMD21DMX::receivedRDMData( void ) {
 
 void LXSAMD21DMX::transmissionComplete( void ) {
 	if ( _dmx_send_state == DMX_STATE_BREAK ) {
-		setBaudRate(DMX_BREAK_BAUD);
+		setBaudRate(_sercomDMX, DMX_BREAK_BAUD);
         _dmx_send_state = DMX_STATE_START;
         _next_send_slot = 0;
-        DMX_SERCOM->USART.INTENCLR.reg = SERCOM_USART_INTENCLR_DRE;
-        DMX_SERCOM->USART.INTENSET.reg = SERCOM_USART_INTENSET_TXC;
-        DMX_SERCOM->USART.DATA.reg = 0;	//break
+        _sercomDMX->USART.INTENCLR.reg = SERCOM_USART_INTENCLR_DRE;
+        _sercomDMX->USART.INTENSET.reg = SERCOM_USART_INTENSET_TXC;
+        _sercomDMX->USART.DATA.reg = 0;	//break
 	} else if ( _dmx_send_state == DMX_STATE_IDLE ) {		//after data completely sent
 		if ( _rdm_task_mode == 	DMX_TASK_SEND_RDM ) {
-			DMX_SERCOM->USART.INTFLAG.bit.TXC = 1;						// clear txc interrupt !!!
-			DMX_SERCOM->USART.INTENCLR.reg = SERCOM_USART_INTENCLR_TXC;	// shut off interrupt
+			_sercomDMX->USART.INTFLAG.bit.TXC = 1;						// clear txc interrupt !!!
+			_sercomDMX->USART.INTENCLR.reg = SERCOM_USART_INTENCLR_TXC;	// shut off interrupt
 			_rdm_task_mode = DMX_TASK_RECEIVE;
 			if ( _rdm_read_handled ) {
 				_dmx_read_state = DMX_READ_STATE_START;
@@ -220,15 +232,15 @@ void LXSAMD21DMX::transmissionComplete( void ) {
 			}
 		}
 	} else if ( _dmx_send_state == DMX_STATE_START ) {
-		setBaudRate(DMX_DATA_BAUD);
+		setBaudRate(_sercomDMX, DMX_DATA_BAUD);
         _dmx_send_state = DMX_STATE_DATA;
-        DMX_SERCOM->USART.INTENCLR.reg = SERCOM_USART_INTENCLR_TXC;
-        DMX_SERCOM->USART.INTENSET.reg = SERCOM_USART_INTENSET_DRE;
+        _sercomDMX->USART.INTENCLR.reg = SERCOM_USART_INTENCLR_TXC;
+        _sercomDMX->USART.INTENSET.reg = SERCOM_USART_INTENSET_DRE;
         	//rdm task (?)
         if ( _rdm_task_mode == DMX_TASK_SEND_RDM ) {
-        	DMX_SERCOM->USART.DATA.reg = _rdmPacket[_next_send_slot++];
+        	_sercomDMX->USART.DATA.reg = _rdmPacket[_next_send_slot++];
         } else {
-        	DMX_SERCOM->USART.DATA.reg = _dmxData[_next_send_slot++];
+        	_sercomDMX->USART.DATA.reg = _dmxData[_next_send_slot++];
         }
 	}
 }
@@ -236,19 +248,19 @@ void LXSAMD21DMX::transmissionComplete( void ) {
 void LXSAMD21DMX::dataRegisterEmpty( void ) {
 	if ( _dmx_send_state == DMX_STATE_DATA ) {
 		if ( _rdm_task_mode == 	DMX_TASK_SEND_RDM ) {
-			DMX_SERCOM->USART.DATA.reg = _rdmPacket[_next_send_slot++];	//send next slot;
+			_sercomDMX->USART.DATA.reg = _rdmPacket[_next_send_slot++];	//send next slot;
 			if ( _next_send_slot > _rdm_len ) {
 				_dmx_send_state = DMX_STATE_IDLE;
-				DMX_SERCOM->USART.INTENCLR.reg = SERCOM_USART_INTENCLR_DRE;
-				DMX_SERCOM->USART.INTENSET.reg = SERCOM_USART_INTENSET_TXC;
+				_sercomDMX->USART.INTENCLR.reg = SERCOM_USART_INTENCLR_DRE;
+				_sercomDMX->USART.INTENSET.reg = SERCOM_USART_INTENSET_TXC;
 				// switch to wait for last byte transmission to complete
 			}
 		} else {
-			DMX_SERCOM->USART.DATA.reg = _dmxData[_next_send_slot++];	//send next slot;
+			_sercomDMX->USART.DATA.reg = _dmxData[_next_send_slot++];	//send next slot;
 			if ( _next_send_slot > _slots ) {
 				_dmx_send_state = DMX_STATE_IDLE;
-				DMX_SERCOM->USART.INTENCLR.reg = SERCOM_USART_INTENCLR_DRE;
-				DMX_SERCOM->USART.INTENSET.reg = SERCOM_USART_INTENSET_TXC;
+				_sercomDMX->USART.INTENCLR.reg = SERCOM_USART_INTENCLR_DRE;
+				_sercomDMX->USART.INTENSET.reg = SERCOM_USART_INTENSET_TXC;
 				// switch to wait for last byte transmission to complete
 			}
 		}
@@ -358,19 +370,19 @@ void LXSAMD21DMX::setRDMReceivedCallback(LXRecvCallback callback) {
 
 
 void LXSAMD21DMX::outputIRQHandler(void) {
-    if ( DMX_SERCOM->USART.INTFLAG.bit.TXC ) {
+    if ( _sercomDMX->USART.INTFLAG.bit.TXC ) {
     	transmissionComplete();
-    } else if ( DMX_SERCOM->USART.INTFLAG.bit.DRE ) {
+    } else if ( _sercomDMX->USART.INTFLAG.bit.DRE ) {
         dataRegisterEmpty();
     }
 }
 
 void LXSAMD21DMX::inputIRQHandler(void) {
 	
-		if ( DMX_SERCOM->USART.INTFLAG.bit.ERROR ) {
-		   DMX_SERCOM->USART.INTFLAG.bit.ERROR = 1;		//acknowledge error, clear interrupt
+		if ( _sercomDMX->USART.INTFLAG.bit.ERROR ) {
+		   _sercomDMX->USART.INTFLAG.bit.ERROR = 1;		//acknowledge error, clear interrupt
 		   
-			if ( DMX_SERCOM->USART.STATUS.bit.FERR ) {	//framing error happens when break is sent
+			if ( _sercomDMX->USART.STATUS.bit.FERR ) {	//framing error happens when break is sent
 				breakReceived();
 				return;
 			}
@@ -378,8 +390,8 @@ void LXSAMD21DMX::inputIRQHandler(void) {
 			//return;
 		}	//ERR
 	
-		if ( DMX_SERCOM->USART.INTFLAG.bit.RXC ) {
-			uint8_t incoming_byte = DMX_SERCOM->USART.DATA.reg;				// read buffer to clear interrupt flag
+		if ( _sercomDMX->USART.INTFLAG.bit.RXC ) {
+			uint8_t incoming_byte = _sercomDMX->USART.DATA.reg;				// read buffer to clear interrupt flag
 			byteReceived(incoming_byte);
 		} // RXC
 	
@@ -387,9 +399,9 @@ void LXSAMD21DMX::inputIRQHandler(void) {
 
 void LXSAMD21DMX::rdmIRQHandler(void) {
 	if ( _rdm_task_mode ) {
-		if ( DMX_SERCOM->USART.INTFLAG.bit.TXC ) {
+		if ( _sercomDMX->USART.INTFLAG.bit.TXC ) {
 			transmissionComplete();
-		} else if ( DMX_SERCOM->USART.INTFLAG.bit.DRE ) {
+		} else if ( _sercomDMX->USART.INTFLAG.bit.DRE ) {
 			dataRegisterEmpty();
 		}
 	} else {
@@ -445,7 +457,7 @@ void LXSAMD21DMX::sendRawRDMPacket( uint8_t len ) {		// only valid if connection
 		digitalWrite(_direction_pin, HIGH);
 		_dmx_send_state = DMX_STATE_BREAK;
 		 //set the interrupts
-		DMX_SERCOM->USART.INTENSET.reg =  SERCOM_USART_INTENSET_TXC | SERCOM_USART_INTENSET_ERROR;
+		_sercomDMX->USART.INTENSET.reg =  SERCOM_USART_INTENSET_TXC | SERCOM_USART_INTENSET_ERROR;
 	}
 	
 	while ( _rdm_task_mode ) {	//wait for packet to be sent and listening to start
